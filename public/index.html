@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>SOQL Playground</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <div class="brand"><span class="logo" aria-hidden="true">{ }</span><strong>SOQL Playground</strong></div>
+      <div class="org" title="Salesforce org">
+        <span class="session-dot" aria-hidden="true"></span>
+        <strong id="org-name">Connecting to your org…</strong>
+        <span id="api-version" class="org-meta">API —</span>
+        <span id="session-info" class="org-meta">Authenticating</span>
+      </div>
+      <div class="connection-actions">
+        <button id="connection" class="status ghost" title="Check connection">Connecting…</button>
+        <button id="refresh-token" class="ghost" title="Request a new Salesforce access token">Refresh token</button>
+        <button id="theme-toggle" class="icon-button ghost" type="button" aria-pressed="false" aria-label="Switch color theme" title="Switch color theme">
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.4"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.2 5.2l1.8 1.8M17 17l1.8 1.8M18.8 5.2 17 7M7 17l-1.8 1.8"/></svg>
+        </button>
+      </div>
+    </header>
+    <main>
+      <aside aria-label="Schema">
+        <div id="object-pane" class="pane">
+          <div class="pane-head">
+            <h2>Objects</h2><span id="object-count" class="count">…</span>
+          </div>
+          <label class="sr-only" for="object-filter">Find an object</label>
+          <input id="object-filter" placeholder="Find an object" type="search" autocomplete="off">
+          <div id="object-list" class="list" role="list"><p class="list-note">Loading objects…</p></div>
+        </div>
+        <div id="field-pane" class="pane" hidden>
+          <button id="object-back" class="back ghost" type="button">All objects</button>
+          <div class="pane-head object-title">
+            <div><h2 id="field-object-name"></h2><span id="field-object-label" class="object-label"></span></div>
+            <button id="use-object" class="ghost small" type="button">Start a query</button>
+          </div>
+          <label class="sr-only" for="field-filter">Find a field</label>
+          <input id="field-filter" placeholder="Find a field" type="search" autocomplete="off">
+          <div id="object-info" class="list-note">Loading fields…</div>
+          <div class="list">
+            <section id="record-types" class="record-types" aria-label="Record types" hidden>
+              <button id="record-types-toggle" class="rt-toggle" type="button" aria-expanded="true" aria-controls="record-types-list">Record types <span id="record-types-count" class="count"></span></button>
+              <div id="record-types-list" class="rt-list" role="list"></div>
+            </section>
+            <div id="fields" role="list"></div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="workspace" aria-label="Query workspace">
+        <section class="composer">
+          <form id="ai-form" class="ai-bar" aria-label="Ask AI to write a query">
+            <span class="ai-mark" aria-hidden="true">✦</span>
+            <label class="sr-only" for="ai-question">Describe the records you want</label>
+            <input id="ai-question" placeholder="Describe the records you want, e.g. accounts created this year with no contacts" maxlength="500" autocomplete="off">
+            <button id="ai-submit" class="ai-button" type="submit">Write SOQL</button>
+          </form>
+          <div class="ai-settings" id="ai-panel">
+            <label for="ai-provider-select">Model</label>
+            <select id="ai-provider-select" disabled aria-label="AI provider"><option value="">Loading…</option></select>
+            <select id="ai-model" disabled aria-label="AI model"><option value="">Loading models…</option></select>
+            <span id="ai-model-meta" class="meta">Fetching models…</span>
+          </div>
+          <p id="ai-answer" class="ai-answer" role="status" hidden></p>
+
+          <div class="code-editor">
+            <pre id="line-numbers" aria-hidden="true">1</pre>
+            <div class="code-area">
+              <pre id="highlight" aria-hidden="true"></pre>
+              <label class="sr-only" for="query">SOQL query</label>
+              <textarea id="query" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off">SELECT Id, Name
+FROM Account
+LIMIT 25</textarea>
+            </div>
+          </div>
+          <div id="editor-resize" class="editor-resize" role="separator" aria-orientation="horizontal" aria-label="Resize editor" tabindex="0"></div>
+          <div class="editor-bar">
+            <div class="editor-tools">
+              <label class="sr-only" for="history">Recent queries</label>
+              <select id="history" disabled><option value="">No recent queries</option></select>
+              <button id="select-query" class="ghost small" type="button">Select all</button>
+              <button id="copy-query" class="ghost small" type="button">Copy</button>
+              <button id="clear-query" class="ghost small" type="button">Clear</button>
+            </div>
+            <div class="run-group">
+              <span id="editor-meta" class="meta">3 lines</span>
+              <span class="meta shortcut"><kbd>⌘</kbd><kbd>Enter</kbd></span>
+              <button id="run" class="primary" type="button">Run query</button>
+            </div>
+          </div>
+        </section>
+
+        <div id="error" class="error" role="alert" hidden><span id="error-text"></span><button id="error-dismiss" class="error-dismiss" type="button" aria-label="Dismiss error">×</button></div>
+
+        <section class="results-panel" aria-busy="false" aria-label="Results">
+          <div class="results-heading">
+            <div class="heading-group">
+              <h2>Results</h2>
+              <span id="result-count" class="count" hidden></span>
+              <span id="result-meta" class="meta" role="status"></span>
+            </div>
+            <div class="result-actions">
+              <label class="sr-only" for="result-filter">Filter loaded records</label>
+              <input id="result-filter" type="search" placeholder="Filter rows" hidden>
+              <div class="tabs" role="group" aria-label="Result format"><button id="table-tab" type="button" aria-pressed="true">Table</button><button id="json-tab" type="button" aria-pressed="false">JSON</button></div>
+              <button id="download-csv" class="ghost small" type="button" disabled>Export CSV</button>
+              <button id="download" class="ghost small" type="button" disabled>Export JSON</button>
+            </div>
+          </div>
+          <div id="result-context" hidden><code id="result-query"></code></div>
+          <div id="query-loading" class="loading" role="status" hidden><span class="spinner" aria-hidden="true"></span> Running query…</div>
+          <div id="empty" class="empty">
+            <p>Run a query to see records here. Pick an object on the left, ask in plain English above, or start from one of these:</p>
+            <div class="examples">
+              <button class="ghost small" type="button" data-query="SELECT Id, Name, CreatedDate FROM Account ORDER BY CreatedDate DESC LIMIT 25">Newest accounts</button>
+              <button class="ghost small" type="button" data-query="SELECT Id, FirstName, LastName, Email, Account.Name FROM Contact LIMIT 25">Contacts with account</button>
+              <button class="ghost small" type="button" data-query="SELECT COUNT() FROM Account">Count accounts</button>
+            </div>
+          </div>
+          <div id="table-view" class="table-scroll" tabindex="0" aria-label="Query results table" hidden></div>
+          <pre id="json-view" tabindex="0" aria-label="Query results JSON" hidden></pre>
+          <div class="results-footer"><span id="pagination-meta" class="meta"></span><button id="load-more" class="ghost small" type="button" hidden>Load more records</button></div>
+        </section>
+        <p class="footnote">Read-only. Queries run with your Salesforce integration user’s permissions. Click a cell to copy it.</p>
+      </section>
+    </main>
+    <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+  </body>
+</html>
