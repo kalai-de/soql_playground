@@ -371,3 +371,52 @@ test('describes record types without the synthetic master entry', async (t) => {
     { id: '012000000000003AAA', name: 'Retired', developerName: 'Retired', active: false },
   ]);
 });
+
+test('sends the selected object plus every object the request names, with child relationships', async (t) => {
+  useLlmProvider(t);
+  const described = [];
+  let received;
+  const schemas = {
+    Inventory__c: {
+      name: 'Inventory__c',
+      fields: [{ name: 'Asset__c', label: 'Asset', type: 'reference', relationshipName: 'Asset__r', referenceTo: ['Asset'] }],
+      childRelationships: [],
+    },
+    Asset: {
+      name: 'Asset',
+      fields: [{ name: 'Name', label: 'Asset Name', type: 'string' }],
+      childRelationships: [
+        { relationshipName: 'Inventories__r', childSObject: 'Inventory__c', field: 'Asset__c' },
+        { relationshipName: null, childSObject: 'AssetHistory', field: 'AssetId' },
+      ],
+    },
+  };
+  const base = await serve(t, (operation) => operation({
+    describeGlobal: async () => ({ sobjects: [
+      { name: 'Asset', label: 'Asset', queryable: true },
+      { name: 'Inventory__c', label: 'Physical Inventory', queryable: true },
+      { name: 'Name', label: 'Name', queryable: true },
+      { name: 'Account', label: 'Account', queryable: true },
+    ] }),
+    sobject: (name) => ({ describe: async () => { described.push(name); return schemas[name]; } }),
+  }), undefined, async (input) => {
+    received = input;
+    return { query: 'SELECT Id FROM Asset LIMIT 10', explanation: 'Assets.' };
+  });
+
+  const response = await fetch(`${base}/api/ai/query`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question: 'Fetch all the Assets with physical inventory and the inventory name',
+      object: 'Inventory__c',
+    }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(described.sort(), ['Asset', 'Inventory__c']);
+  assert.deepEqual(received.objectSchemas.map((schema) => schema.name), ['Inventory__c', 'Asset']);
+  assert.equal(received.objectFields.name, 'Inventory__c');
+  assert.deepEqual(received.objectSchemas[1].childRelationships, [
+    { relationshipName: 'Inventories__r', childSObject: 'Inventory__c', field: 'Asset__c' },
+  ]);
+});

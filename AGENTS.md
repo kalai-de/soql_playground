@@ -45,13 +45,19 @@ public/
 1. Browser calls a `/api/*` endpoint from `public/app.js`.
 2. `src/app.js` validates the body, then runs Salesforce work through `withSalesforce()`.
 3. `salesforce.js` reuses a cached `Connection` and transparently reauthorizes on expiry.
-4. For AI routes, `app.js` resolves the requested provider (`resolveProvider()`), checks the model with `isAllowedModel()`, gathers schema context, calls `suggestQuery()` in `soql-assistant.js`, then re-validates the generated query with `normalizeGeneratedQuery()` before returning it.
+4. For AI routes, `app.js` resolves the requested provider (`resolveProvider()`), checks the model with `isAllowedModel()`, picks up to `MAX_PROMPT_OBJECTS` (4) objects with `relevantObjects()` and describes them in parallel, calls `suggestQuery()` in `soql-assistant.js`, then re-validates the generated query with `normalizeGeneratedQuery()` before returning it.
 
 `createApp()` takes injectable dependencies (`run`, `refresh`, `assist`, `getModels`) so tests can stub Salesforce and the LLM. `getModels` receives the provider name.
 
 ### Schema shaping
 
 `describeFields()` in `app.js` turns a jsforce describe into `{ name, recordTypes, fields }`. The same shape feeds both `GET /api/objects/:name` and the AI prompt, but `buildPrompt()` only uses field name, label, type, relationship, references, and filterability.
+
+AI prompt context:
+
+- `relevantObjects()` orders candidates as: sidebar selection, objects the request names (`mentionedObjects()`: API name or label, simple plurals, longest match first, skipping `GENERIC_OBJECT_TERMS` such as "name"), then objects in the editor's `FROM` clauses. It keeps the first 4.
+- The route sends `objectSchemas` (each `describeFields()` plus `childRelationships()`) and `objectFields` (the first schema, kept for older callers).
+- `buildPrompt()` labels the first schema "Primary" (up to `MAX_SCHEMA_FIELDS`, 400) and the rest "Related" (up to `MAX_RELATED_FIELDS`, 150), and lists up to `MAX_CHILD_RELATIONSHIPS` (60) child relationships per object, custom `__r` ones first. Keep these caps: they bound the prompt's token cost.
 
 - `picklistValues()` keeps active values only, as `{ value, label, default? }`, for `picklist` and `multipicklist` fields. The key is omitted for other types.
 - `recordTypes()` drops the synthetic Master record type, keeps inactive ones (existing records can still use them), and sorts active first, then by name.

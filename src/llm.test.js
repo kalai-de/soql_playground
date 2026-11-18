@@ -489,3 +489,29 @@ test('reads the Copilot model catalog from the CLI help', async (t) => {
   assert.equal(catalog.defaultModel, 'auto');
   assert.deepEqual(catalog.models.map((model) => model.id), ['auto', 'claude-sonnet-5.5', 'gpt-6.1-sol']);
 });
+
+test('lists related object schemas and child relationships in the prompt', () => {
+  const prompt = buildPrompt({
+    question: 'Assets with their inventory',
+    objectSchemas: [
+      {
+        name: 'Asset',
+        fields: [{ name: 'Name', label: 'Asset Name', type: 'string' }],
+        childRelationships: [
+          { relationshipName: 'Cases', childSObject: 'Case', field: 'AssetId' },
+          { relationshipName: 'Inventories__r', childSObject: 'Inventory__c', field: 'Asset__c' },
+        ],
+      },
+      {
+        name: 'Inventory__c',
+        fields: Array.from({ length: 160 }, (_, index) => ({ name: `Field${index}__c`, type: 'string' })),
+      },
+    ],
+  });
+  assert.match(prompt, /Primary object schema: Asset\nFields:\n- Name \[type: string; label: Asset Name\]/);
+  assert.match(prompt, /Child relationships \(use in subqueries\):\n- Inventories__r \[child: Inventory__c\.Asset__c\]\n- Cases \[child: Case\.AssetId\]/);
+  assert.match(prompt, /Related object schema: Inventory__c/);
+  assert.match(prompt, /Field149__c/);
+  assert.doesNotMatch(prompt, /Field150__c/);
+  assert.match(prompt, /\(10 more fields not shown\)/);
+});

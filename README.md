@@ -57,13 +57,13 @@ Type a request in the amber prompt above the editor and choose **Write SOQL**. T
 
 - your request and the current editor contents,
 - the org's queryable object names (up to 500), and
-- the fields of the object selected in the sidebar, or one inferred from your request (up to 400 fields).
+- the full schema of up to 4 relevant objects: the object selected in the sidebar, every object your request names (by API name or label, singular or plural, so "assets" and "physical inventory" both count), and objects in the editor's `FROM` clauses. Each schema lists its fields with types, labels, and lookup targets (up to 400 fields for the first object, 150 for the others) and its child relationship names (up to 60), so the model can traverse lookups in either direction or write subqueries.
 
-No record data is sent. Picklist values and record types are not included in the prompt.
+No record data is sent. Picklist values and record types are not included in the prompt. If the model says a schema is missing, name the object in your request or select it in the sidebar.
 
 The answer is re-validated on the server before it reaches the editor: it must be a single `SELECT` with one top-level `LIMIT` between 1 and 200. If the model says the schema cannot answer the request, its explanation is shown instead of a query.
 
-A typical request with an object selected is roughly 3,000 to 15,000 input tokens, mostly the schema, and about 100 output tokens.
+A typical request is roughly 3,000 to 25,000 input tokens depending on how many objects are involved, mostly schema, and about 100 output tokens.
 
 ### Providers
 
@@ -164,7 +164,7 @@ All endpoints are prefixed with `/api` and return JSON. Errors are `{ error, cod
 | "Could not find the Claude Code CLI" or "…GitHub Copilot CLI" | Set `CLAUDE_CODE_PATH` or `COPILOT_PATH` to the full binary path. The server only sees the `PATH` of the shell that started it. |
 | Claude Code fails with "Not logged in" | Run `claude` once and log in. |
 | Copilot fails with "Model … is not available" | Pick another model or `auto`; your Copilot plan decides which models you can use. |
-| The AI says it needs more schema | Select the relevant object in the sidebar first, so its fields are included, or try a stronger model. |
+| The AI says it needs more schema | Name every object in your request (API name or label), or select the main one in the sidebar. Only up to 4 objects get full schemas. |
 | A provider is missing from the dropdown | Check its key or `*_ENABLED` flag in `.env`, then restart the server. |
 
 ## Project structure

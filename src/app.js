@@ -38,20 +38,35 @@ function searchableObjectTerms(object) {
     .map((value) => value.replace(/[_\W]+/g, ' ').trim().toLowerCase()))];
 }
 
-function inferObject(question, previousQuery, objects) {
-  const byName = new Map(objects.map((object) => [object.name.toLowerCase(), object]));
-  const fromMatches = [...previousQuery.matchAll(/\bFROM\s+([A-Za-z][A-Za-z0-9_]*)/gi)];
-  for (let index = fromMatches.length - 1; index >= 0; index -= 1) {
-    const match = byName.get(fromMatches[index][1].toLowerCase());
-    if (match) return match.name;
-  }
+const MAX_PROMPT_OBJECTS = 4;
+// Object names that are also everyday words in a request ("show the name of…").
+const GENERIC_OBJECT_TERMS = new Set(['name', 'data', 'record', 'list', 'view', 'value']);
 
+function mentionedObjects(question, objects) {
   const request = ` ${question.replace(/[_\W]+/g, ' ').toLowerCase()} `;
-  const matches = objects
+  const plural = (term) => (/(s|x|ch|sh)$/.test(term) ? `${term}es` : /[^aeiou]y$/.test(term) ? `${term.slice(0, -1)}ies` : `${term}s`);
+  return objects
     .flatMap((object) => searchableObjectTerms(object).map((term) => ({ object, term })))
-    .filter(({ term }) => request.includes(` ${term} `) || request.includes(` ${term}s `))
-    .sort((a, b) => b.term.length - a.term.length);
-  return matches[0]?.object.name;
+    .filter(({ term }) => term.length > 2 && !GENERIC_OBJECT_TERMS.has(term))
+    .filter(({ term }) => request.includes(` ${term} `) || request.includes(` ${plural(term)} `))
+    .sort((a, b) => b.term.length - a.term.length)
+    .map(({ object }) => object.name);
+}
+
+/**
+ * Objects whose schema the AI should see, most relevant first: the object
+ * selected in the sidebar, objects in the editor's FROM clauses (latest first),
+ * then every object the request names by API name or label.
+ */
+function relevantObjects(question, previousQuery, selected, objects) {
+  const byName = new Map(objects.map((object) => [object.name.toLowerCase(), object.name]));
+  const fromClauses = [...previousQuery.matchAll(/\bFROM\s+([A-Za-z][A-Za-z0-9_]*)/gi)]
+    .map((match) => byName.get(match[1].toLowerCase()))
+    .filter(Boolean)
+    .reverse();
+  const mentioned = mentionedObjects(question, objects);
+  const ordered = [selected && byName.get(selected.toLowerCase()), ...mentioned, ...fromClauses];
+  return [...new Set(ordered.filter(Boolean))].slice(0, MAX_PROMPT_OBJECTS);
 }
 
 const PICKLIST_TYPES = new Set(['picklist', 'multipicklist']);
@@ -80,6 +95,13 @@ function recordTypes(described) {
       ...(info.defaultRecordTypeMapping ? { default: true } : {}),
     }))
     .sort((a, b) => (b.active - a.active) || a.name.localeCompare(b.name));
+}
+
+/** Parent-to-child relationships, for subqueries such as (SELECT Id FROM Contacts). */
+function childRelationships(described) {
+  return (Array.isArray(described.childRelationships) ? described.childRelationships : [])
+    .filter((child) => child.relationshipName && child.childSObject)
+    .map(({ relationshipName, childSObject, field }) => ({ relationshipName, childSObject, field }));
 }
 
 function describeFields(described) {
@@ -177,17 +199,19 @@ export function createApp(
       const objectNames = global.sobjects
         .filter((entry) => entry.queryable)
         .map(({ name, label }) => ({ name, label }));
-      const primaryObject = object || inferObject(question, previousQuery || '', objectNames);
-      let objectFields;
-      if (primaryObject) {
-        objectFields = describeFields(await client.sobject(primaryObject).describe());
-      }
-      return { objectNames, objectFields };
+      const names = relevantObjects(question, previousQuery || '', object, objectNames);
+      const described = await Promise.all(names.map((name) => client.sobject(name).describe()));
+      const objectSchemas = described.map((entry) => ({
+        ...describeFields(entry),
+        childRelationships: childRelationships(entry),
+      }));
+      return { objectNames, objectSchemas };
     });
     const suggestion = await assist({
       question: question.trim(),
       objectNames: context.objectNames,
-      objectFields: context.objectFields,
+      objectFields: context.objectSchemas[0],
+      objectSchemas: context.objectSchemas,
       previousQuery: previousQuery || '',
       model: model || llmConfig.model,
       provider: llmConfig.name,
