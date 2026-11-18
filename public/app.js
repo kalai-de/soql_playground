@@ -596,8 +596,9 @@ function updateAiModelMeta() {
   const model = aiModels.get($('ai-model').value);
   if (!model) return;
   storage.set(modelStorageKey(currentProvider()), model.id);
-  if (currentProvider() === 'claude-code') {
-    $('ai-model-meta').textContent = 'Runs on this machine with your Claude Code login';
+  const localLogin = { 'claude-code': 'Claude Code', copilot: 'GitHub Copilot' }[currentProvider()];
+  if (localLogin) {
+    $('ai-model-meta').textContent = `Runs on this machine with your ${localLogin} login`;
     $('ai-model-meta').title = model.name;
     return;
   }
@@ -658,7 +659,7 @@ async function loadAiStatus() {
     return;
   }
   if (!status.configured) {
-    showAiUnavailable('Add an AI provider key to .env (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, or OPEN_ROUTER_API_KEY) or set CLAUDE_CODE_ENABLED=true, restart the server, and ask a question here.');
+    showAiUnavailable('Add an AI provider key to .env (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, or OPEN_ROUTER_API_KEY) or set CLAUDE_CODE_ENABLED=true or COPILOT_ENABLED=true, restart the server, and ask a question here.');
     return;
   }
   const providers = status.providers?.length

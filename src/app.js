@@ -14,7 +14,7 @@ function sessionStatus(client) {
 }
 
 const NOT_CONFIGURED = {
-  error: 'No AI provider is configured. Add an API key or set CLAUDE_CODE_ENABLED=true in .env, then restart the server.',
+  error: 'No AI provider is configured. Add an API key, or set CLAUDE_CODE_ENABLED=true or COPILOT_ENABLED=true in .env, then restart the server.',
   code: 'LLM_NOT_CONFIGURED',
 };
 const PROVIDER_NAME = /^[a-z][a-z0-9-]{0,39}$/;

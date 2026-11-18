@@ -7,7 +7,7 @@ A small Node.js app built with Express and jsforce. It ships a SOQL editor (line
 - **SOQL editor** — syntax highlighting, line numbers, resizable height, field insertion at the cursor, `Cmd/Ctrl + Enter` to run, and explicit `Cmd/Ctrl + A` select-all handling.
 - **Schema explorer** — a full-height, searchable object list that drills into fields (with labels, types, and lookup targets). Click a field to insert its API name. Picklist fields expand to show their active values; click one to insert it as a quoted SOQL string. Field search also matches picklist values. Objects with record types list them above the fields (name, DeveloperName, Id); click the DeveloperName or Id to insert it quoted, for `RecordType.DeveloperName = …` or `RecordTypeId = …`.
 - **Results** — table and JSON views, filter loaded records, click-to-copy cells, pagination via "Load more", and CSV or JSON export of all loaded records.
-- **AI assistant** — describe the records you want and the server asks the selected model for a SOQL query, then drops it into the editor for review. Switch between providers (OpenRouter, Claude Code, OpenAI, Anthropic, Gemini) per query.
+- **AI assistant** — describe the records you want and the server asks the selected model for a SOQL query, then drops it into the editor for review. Switch between providers (OpenRouter, Claude Code, GitHub Copilot, OpenAI, Anthropic, Gemini) per query.
 - **Session controls** — refresh the Salesforce token from the UI, dark/light theme, and auto-dismissing toasts.
 - **Persistence** — query, selected object, view mode, theme, editor height, and AI provider/model selection survive a page reload.
 
@@ -66,6 +66,7 @@ Configure one or more providers in `.env`, then restart:
 | Anthropic API | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` | Default model only |
 | Google Gemini | `GOOGLE_API_KEY` | `gemini-2.0-flash` | Default model only |
 | Claude Code (local) | `CLAUDE_CODE_ENABLED=true` | `sonnet` | `sonnet`, `opus`, `haiku` |
+| GitHub Copilot (local) | `COPILOT_ENABLED=true` | `auto` | Models from your Copilot plan |
 
 Every configured provider appears in the panel's **Provider** dropdown, so you can switch between them (for example OpenRouter and Claude Code) per query. The provider and the model chosen for each provider are remembered in the browser.
 
@@ -95,6 +96,22 @@ The `claude-code` provider runs the [Claude Code](https://claude.com/claude-code
 | `CLAUDE_CODE_MODEL` | Default model: `sonnet`, `opus`, `haiku`, or a full model ID |
 | `CLAUDE_CODE_PATH` | Path to the `claude` binary if it is not on `PATH` |
 
+### GitHub Copilot (local)
+
+The `copilot` provider runs the [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli) in non-interactive mode (`copilot -p`) using your Copilot login (`copilot login`). It needs no API key; each query uses Copilot premium requests according to the model you pick.
+
+- **Local only:** it works only where the server runs on a machine with `copilot` installed and signed in.
+- **Locked down:** every built-in tool is excluded (`--excluded-tools`), built-in MCP servers and repository instructions are off, and each call runs in a new empty temp directory that is deleted afterwards. Non-interactive mode also denies any tool request that is not explicitly allowed, and the app never passes `--allow-all`. `COPILOT_ALLOW_ALL` and server secrets are removed from its environment.
+- **Models:** the dropdown lists the model IDs from `copilot help config` (for example `claude-sonnet-5.5`, `gpt-6.1-sol`), plus `auto`. Models your plan cannot use fail with Copilot's own error message.
+- **Slower:** expect roughly 10–20 seconds per query; calls time out after 180 seconds. Copilot has no system-prompt flag, so the instructions and your request are sent as one prompt.
+- **Sessions:** Copilot keeps its own local session history in `~/.copilot`; the app cannot turn that off.
+
+| Variable | Purpose |
+| --- | --- |
+| `COPILOT_ENABLED` | `true` to offer the provider |
+| `COPILOT_MODEL` | Default model: `auto` or a Copilot model ID |
+| `COPILOT_PATH` | Path to the `copilot` binary if it is not on `PATH` |
+
 ### Security notes
 
 API keys stay on the server; the browser only receives provider names and model metadata. `GET /api/ai/models` caches the OpenRouter catalog for 10 minutes. `POST /api/ai/query` accepts an optional `provider` and `model`; a model that does not belong to the provider is rejected with `400`. With no provider configured, the panel shows a hint and the endpoint returns `503`. Set `OPENROUTER_SITE_URL` and `OPENROUTER_APP_NAME` to customize the attribution headers sent to OpenRouter.
@@ -121,7 +138,7 @@ src/
   index.js          # HTTP entry point; starts Express on 127.0.0.1
   app.js            # Express app: routes, validation, static files
   salesforce.js     # jsforce connection, caching, token refresh
-  llm.js            # Multi-provider LLM client (HTTP APIs + local Claude Code CLI), model catalogs
+  llm.js            # Multi-provider LLM client (HTTP APIs + local Claude Code / Copilot CLIs), model catalogs
   soql-assistant.js # Prompt building and SOQL output validation
   *.test.js         # Node test runner suites
 public/

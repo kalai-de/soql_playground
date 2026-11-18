@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const TIMEOUT_MS = 45000;
 const CLAUDE_CODE_TIMEOUT_MS = 120000;
+const COPILOT_TIMEOUT_MS = 180000;
 const MODEL_TIMEOUT_MS = 15000;
 const MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
 const modelCache = new Map();
@@ -40,6 +43,17 @@ const PROVIDERS = {
     kind: 'claude-code',
     model: 'sonnet',
   },
+  // Local only: runs the GitHub Copilot CLI (`copilot -p`) with your Copilot login.
+  copilot: {
+    kind: 'copilot',
+    model: 'auto',
+  },
+};
+
+/** Local CLI providers: enabled by a flag, configured by <PREFIX>_PATH / <PREFIX>_MODEL. */
+const CLI_PROVIDERS = {
+  'claude-code': { envPrefix: 'CLAUDE_CODE', command: 'claude' },
+  copilot: { envPrefix: 'COPILOT', command: 'copilot' },
 };
 
 const PROVIDER_LABELS = {
@@ -48,6 +62,7 @@ const PROVIDER_LABELS = {
   anthropic: 'Anthropic API',
   gemini: 'Gemini',
   'claude-code': 'Claude Code (local)',
+  copilot: 'GitHub Copilot (local)',
 };
 
 const CLAUDE_CODE_MODELS = [
@@ -91,7 +106,7 @@ function isEnabled(value) {
 function isAvailable(name) {
   if (typeof name !== 'string' || !Object.hasOwn(PROVIDERS, name)) return false;
   const provider = PROVIDERS[name];
-  if (provider.kind === 'claude-code') return isEnabled(process.env.CLAUDE_CODE_ENABLED);
+  if (CLI_PROVIDERS[name]) return isEnabled(process.env[`${CLI_PROVIDERS[name].envPrefix}_ENABLED`]);
   return Boolean(process.env[provider.envKey]?.trim());
 }
 
@@ -116,13 +131,14 @@ export function getLlmConfig(name) {
   const isDefault = resolved === fallback;
   const envModel = isDefault ? process.env.LLM_MODEL?.trim() : '';
 
-  if (provider.kind === 'claude-code') {
+  const cli = CLI_PROVIDERS[resolved];
+  if (cli) {
     return {
       name: resolved,
       label: PROVIDER_LABELS[resolved],
       kind: provider.kind,
-      command: process.env.CLAUDE_CODE_PATH?.trim() || 'claude',
-      model: process.env.CLAUDE_CODE_MODEL?.trim() || envModel || provider.model,
+      command: process.env[`${cli.envPrefix}_PATH`]?.trim() || cli.command,
+      model: process.env[`${cli.envPrefix}_MODEL`]?.trim() || envModel || provider.model,
       apiKey: '',
     };
   }
@@ -158,10 +174,18 @@ function fixedModels(config) {
     : [{ id: config.model, name: config.model }, ...CLAUDE_CODE_MODELS];
 }
 
+/**
+ * Copilot model IDs look like `claude-sonnet-5.5` or `gpt-6.1-sol`. The CLI rejects
+ * IDs your plan cannot use; this check only keeps the argument well-formed (it
+ * can never start with "-", so it cannot be read as a flag).
+ */
+const COPILOT_MODEL_ID = /^[a-z][a-z0-9.-]{0,63}$/;
+
 /** Whether a client-selected model may be used with the given provider config. */
 export function isAllowedModel(config, model) {
   if (typeof model !== 'string') return false;
   if (config.name === 'openrouter') return isValidModelId(model);
+  if (config.kind === 'copilot') return COPILOT_MODEL_ID.test(model);
   return fixedModels(config).some((entry) => entry.id === model);
 }
 
@@ -196,6 +220,9 @@ function normalizeModel(model) {
 export async function listLlmModels(providerName) {
   const config = getLlmConfig(providerName);
   if (!config) throw llmError('No AI provider is configured.');
+  if (config.kind === 'copilot') {
+    return { provider: config.name, defaultModel: config.model, models: await copilotModels(config) };
+  }
   if (config.name !== 'openrouter') {
     return {
       provider: config.name,
@@ -289,17 +316,48 @@ function buildRequest(config, prompt) {
 }
 
 /**
- * Environment for the CLI: drop server secrets (including ANTHROPIC_API_KEY, so
- * the CLI uses your Claude Code login) and nested-session markers.
+ * Environment for a local CLI: drop server secrets (including ANTHROPIC_API_KEY,
+ * so Claude Code uses your login), nested-session markers, and any setting that
+ * would auto-approve Copilot tools. GitHub tokens are kept: Copilot may use them
+ * to sign in.
  */
-function claudeCodeEnv() {
+function cliEnv() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (/API_KEY|SECRET|PASSWORD|^SALESFORCE_|^LLM_|^OPENROUTER_|^CLAUDECODE$|^CLAUDE_CODE_(ENABLED|PATH|MODEL|ENTRYPOINT)$/i.test(key)) {
+    if (/API_KEY|SECRET|PASSWORD|^SALESFORCE_|^LLM_|^OPENROUTER_|^CLAUDECODE$|^CLAUDE_CODE_(ENABLED|PATH|MODEL|ENTRYPOINT)$|^COPILOT_(ENABLED|PATH|MODEL|ALLOW_ALL|ASSISTED_APPROVAL)$/i.test(key)) {
       delete env[key];
     }
   }
   return env;
+}
+
+const cliName = (config) => config.label.replace(/ \(local\)$/, '');
+
+function runCli(config, args, { input, cwd, timeout }) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(config.command, args, {
+      cwd,
+      env: cliEnv(),
+      timeout,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error?.code === 'ENOENT') {
+        const variable = `${CLI_PROVIDERS[config.name].envPrefix}_PATH`;
+        return reject(llmError(`Could not find the ${cliName(config)} CLI ("${config.command}"). Install it or set ${variable}.`));
+      }
+      resolve({ error, stdout, stderr });
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(input ?? '');
+  });
+}
+
+function cliFailure(config, error, stderr) {
+  const reason = error.killed
+    ? 'timed out'
+    : String(stderr || error.message).replace(/\s+/g, ' ').trim().slice(0, 240);
+  return llmError(`${cliName(config)} failed: ${reason}`);
 }
 
 /**
@@ -307,8 +365,8 @@ function claudeCodeEnv() {
  * no MCP servers, no settings or skills, and runs outside the project so it
  * cannot read files or act on the untrusted text in the prompt.
  */
-function runClaudeCode(config, prompt) {
-  const args = [
+async function runClaudeCode(config, prompt) {
+  const { error, stdout, stderr } = await runCli(config, [
     '-p',
     '--output-format', 'json',
     '--model', config.model,
@@ -318,40 +376,114 @@ function runClaudeCode(config, prompt) {
     '--setting-sources', '',
     '--disable-slash-commands',
     '--no-session-persistence',
-  ];
-  return new Promise((resolve, reject) => {
-    const child = execFile(config.command, args, {
-      cwd: tmpdir(),
-      env: claudeCodeEnv(),
-      timeout: CLAUDE_CODE_TIMEOUT_MS,
-      maxBuffer: 8 * 1024 * 1024,
-      windowsHide: true,
-    }, (error, stdout, stderr) => {
-      let data;
-      try {
-        data = JSON.parse(stdout);
-      } catch {
-        data = null;
-      }
-      if (data?.is_error) {
-        return reject(llmError(`Claude Code returned an error: ${String(data.result || data.subtype || 'unknown').slice(0, 240)}`));
-      }
-      if (error) {
-        if (error.code === 'ENOENT') {
-          return reject(llmError(`Could not find the Claude Code CLI ("${config.command}"). Install it or set CLAUDE_CODE_PATH.`));
-        }
-        const reason = error.killed ? 'timed out' : String(stderr || error.message).replace(/\s+/g, ' ').trim().slice(0, 240);
-        return reject(llmError(`Claude Code failed: ${reason}`));
-      }
-      if (!data) return reject(llmError('Claude Code returned an unreadable response.'));
-      if (typeof data.result !== 'string' || !data.result.trim()) {
-        return reject(llmError('Claude Code returned an empty response.'));
-      }
-      resolve(data.result.trim());
-    });
-    child.stdin.on('error', () => {});
-    child.stdin.end(prompt.user);
-  });
+  ], { input: prompt.user, cwd: tmpdir(), timeout: CLAUDE_CODE_TIMEOUT_MS });
+  let data;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    data = null;
+  }
+  if (data?.is_error) {
+    throw llmError(`Claude Code returned an error: ${String(data.result || data.subtype || 'unknown').slice(0, 240)}`);
+  }
+  if (error) throw cliFailure(config, error, stderr);
+  if (!data) throw llmError('Claude Code returned an unreadable response.');
+  if (typeof data.result !== 'string' || !data.result.trim()) {
+    throw llmError('Claude Code returned an empty response.');
+  }
+  return data.result.trim();
+}
+
+/** Every Copilot CLI built-in tool, all excluded. Unlisted new tools are still denied: -p never auto-approves. */
+const COPILOT_TOOLS = [
+  'bash', 'powershell', 'read_bash', 'write_bash', 'stop_bash', 'list_bash',
+  'view', 'edit', 'create', 'str_replace_editor', 'grep', 'glob',
+  'web_fetch', 'sql', 'session_store_sql', 'skill', 'task',
+  'read_agent', 'write_agent', 'list_agents', 'ask_user', 'report_intent',
+  'update_todo', 'think', 'fetch_copilot_cli_documentation',
+];
+
+/** Read the last assistant message out of Copilot's JSONL event stream. */
+function copilotAnswer(stdout) {
+  let answer = '';
+  let exitCode;
+  for (const line of stdout.split('\n')) {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event.type === 'assistant.message' && typeof event.data?.content === 'string' && event.data.content.trim()) {
+      answer = event.data.content;
+    } else if (event.type === 'result') {
+      exitCode = event.exitCode;
+    }
+  }
+  return { answer: answer.trim(), exitCode };
+}
+
+/**
+ * Run the GitHub Copilot CLI headlessly. Copilot has no system-prompt flag, so
+ * the instructions and the request go in one prompt. Every tool is excluded,
+ * built-in MCP servers and repository instructions are off, and it runs in an
+ * empty throwaway directory that is removed afterwards.
+ */
+async function runCopilot(config, prompt) {
+  const workdir = await mkdtemp(join(tmpdir(), 'soql-copilot-'));
+  try {
+    const { error, stdout, stderr } = await runCli(config, [
+      '-C', workdir,
+      '-p', `${prompt.system}\n\n---\n\n${prompt.user}`,
+      '--model', config.model,
+      '--output-format', 'json',
+      `--excluded-tools=${COPILOT_TOOLS.join(',')}`,
+      '--disable-builtin-mcps',
+      '--no-custom-instructions',
+      '--no-ask-user',
+      '--disallow-temp-dir',
+      '--no-auto-update',
+      '--no-color',
+    ], { cwd: workdir, timeout: COPILOT_TIMEOUT_MS });
+    const { answer, exitCode } = copilotAnswer(stdout || '');
+    if (error || (exitCode !== undefined && exitCode !== 0)) {
+      throw cliFailure(config, error || { message: `exit code ${exitCode}` }, stderr);
+    }
+    if (!answer) throw llmError('GitHub Copilot returned an empty response.');
+    return answer;
+  } finally {
+    await rm(workdir, { recursive: true, force: true });
+  }
+}
+
+const COPILOT_CATALOG_TTL_MS = 60 * 60 * 1000;
+let copilotCatalog;
+
+/**
+ * Copilot's model IDs, read from `copilot help config` so the list follows CLI
+ * updates. Falls back to just "auto" when the help text cannot be read.
+ */
+async function copilotModels(config) {
+  if (copilotCatalog?.command === config.command && copilotCatalog.expiresAt > Date.now()) {
+    return withDefault(copilotCatalog.models, config.model);
+  }
+  let ids = [];
+  try {
+    const { error, stdout } = await runCli(config, ['help', 'config'], { cwd: tmpdir(), timeout: MODEL_TIMEOUT_MS });
+    if (!error) {
+      const section = stdout.match(/`model`:[\s\S]*?(?=\n\s*`[A-Za-z]+`:)/)?.[0] || '';
+      ids = [...section.matchAll(/^\s*-\s*"([^"]+)"/gm)].map((match) => match[1]).filter((id) => COPILOT_MODEL_ID.test(id));
+    }
+  } catch {
+    ids = [];
+  }
+  const models = [{ id: 'auto', name: 'Auto (Copilot picks)' }, ...ids.map((id) => ({ id, name: id }))];
+  if (ids.length) copilotCatalog = { command: config.command, models, expiresAt: Date.now() + COPILOT_CATALOG_TTL_MS };
+  return withDefault(models, config.model);
+}
+
+function withDefault(models, model) {
+  return models.some((entry) => entry.id === model) ? models : [{ id: model, name: model }, ...models];
 }
 
 export async function completeText(prompt, options = {}) {
@@ -367,6 +499,7 @@ export async function completeText(prompt, options = {}) {
   }
   const config = { ...baseConfig, model: selectedModel || baseConfig.model };
   if (config.kind === 'claude-code') return runClaudeCode(config, prompt);
+  if (config.kind === 'copilot') return runCopilot(config, prompt);
   const { url, headers, body, pick } = buildRequest(config, prompt);
 
   let response;

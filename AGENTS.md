@@ -30,7 +30,7 @@ src/
   index.js          # Entry point. Reads PORT, listens on 127.0.0.1.
   app.js            # createApp(): routes, input validation, static serving, error handler.
   salesforce.js     # Connection cache, client-credentials auth, auto-refresh on INVALID_SESSION_ID.
-  llm.js            # Multi-provider LLM client: HTTP APIs + local Claude Code CLI, model catalogs.
+  llm.js            # Multi-provider LLM client: HTTP APIs + local Claude Code / Copilot CLIs, model catalogs.
   soql-assistant.js # Prompt construction and SOQL output validation.
   *.test.js         # Tests, one file per module, using node:test.
 public/
@@ -55,7 +55,9 @@ Providers live in the `PROVIDERS` map in `llm.js`. Several can be configured at 
 - `getLlmConfig(name?)` resolves one provider (the default when `name` is omitted) or returns `null` if it is unknown or not configured. `listLlmProviders()` lists configured providers, default first, with no secrets.
 - The default is `LLM_PROVIDER` when usable, otherwise the first configured provider in map order. `LLM_MODEL` and `LLM_BASE_URL` apply only to the default provider.
 - `isAllowedModel(config, model)` is the single model check: OpenRouter accepts any valid `vendor/model` ID; other providers accept only their fixed catalog (`fixedModels()`).
-- HTTP providers go through `buildRequest()` + `fetch`. The `claude-code` kind goes through `runClaudeCode()`, which spawns `claude -p --output-format json` with `execFile` (no shell), sends the user prompt on stdin, and reads `result` from the JSON output.
+- HTTP providers go through `buildRequest()` + `fetch`. Local CLI providers are listed in `CLI_PROVIDERS` (enabled by `<PREFIX>_ENABLED`, with `<PREFIX>_PATH` / `<PREFIX>_MODEL`) and spawn through `runCli()` with `execFile` (no shell) and the scrubbed `cliEnv()`.
+  - `claude-code` → `runClaudeCode()`: `claude -p --output-format json`, user prompt on stdin, reads `result`.
+  - `copilot` → `runCopilot()`: `copilot -C <fresh temp dir> -p <system + user> --output-format json`, reads the last `assistant.message` from the JSONL events, deletes the temp dir. Copilot has no system-prompt flag. Its model list is parsed from `copilot help config` and cached for an hour; `isAllowedModel()` only enforces the ID shape (`COPILOT_MODEL_ID`) and the CLI rejects unavailable models.
 - To add a provider: add it to `PROVIDERS` and `PROVIDER_LABELS`, handle its `kind` in `buildRequest()` (or a dedicated runner), and add tests.
 
 ### API contract for AI routes
@@ -83,17 +85,18 @@ Providers live in the `PROVIDERS` map in `llm.js`. Several can be configured at 
 - **AI-generated queries must keep a top-level `LIMIT` between 1 and 200** and are re-validated server-side; do not relax this.
 - **API keys never reach the browser.** Only provider name and model metadata are exposed.
 - **Claude Code runs locked down.** The prompt contains untrusted text (the user's question and Salesforce labels), so `runClaudeCode()` must keep `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, `--disable-slash-commands`, and `--no-session-persistence`, run in `os.tmpdir()`, and strip secrets from the child env (`claudeCodeEnv()`). Never add `--dangerously-skip-permissions`, tools, or a shell. Model values passed as CLI args must come from the fixed allow-list.
-- **Claude Code is opt-in and local.** It is enabled only by `CLAUDE_CODE_ENABLED`; never auto-enable it by detecting the binary.
+- **Copilot runs locked down.** `runCopilot()` must keep `--excluded-tools=<COPILOT_TOOLS>`, `--disable-builtin-mcps`, `--no-custom-instructions`, `--no-ask-user`, `--disallow-temp-dir`, and the fresh temp working directory. Never pass `--allow-all`, `--allow-all-tools`, `--allow-tool`, `--yolo`, or `--autopilot`, and keep stripping `COPILOT_ALLOW_ALL` / `COPILOT_ASSISTED_APPROVAL` from its env. When the CLI adds tools, add them to `COPILOT_TOOLS`.
+- **Local CLI providers are opt-in.** Claude Code and Copilot are enabled only by `CLAUDE_CODE_ENABLED` / `COPILOT_ENABLED`; never auto-enable them by detecting the binary.
 - **Redact secrets in errors.** `llm.js` strips the API key from upstream error summaries; preserve that behavior.
 
 ## Environment variables
 
-See `.env.example`. Salesforce: `SALESFORCE_LOGIN_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`, `SALESFORCE_API_VERSION`, `PORT`. AI: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPEN_ROUTER_API_KEY`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `OPENROUTER_SITE_URL`, `OPENROUTER_APP_NAME`, `CLAUDE_CODE_ENABLED`, `CLAUDE_CODE_MODEL`, `CLAUDE_CODE_PATH`. Never hardcode or commit real credentials.
+See `.env.example`. Salesforce: `SALESFORCE_LOGIN_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`, `SALESFORCE_API_VERSION`, `PORT`. AI: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPEN_ROUTER_API_KEY`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `OPENROUTER_SITE_URL`, `OPENROUTER_APP_NAME`, `CLAUDE_CODE_ENABLED`, `CLAUDE_CODE_MODEL`, `CLAUDE_CODE_PATH`, `COPILOT_ENABLED`, `COPILOT_MODEL`, `COPILOT_PATH`. Never hardcode or commit real credentials.
 
 ## Testing
 
 - Tests use the built-in `node:test` runner with `node:assert/strict`; one `*.test.js` per module.
 - API tests spin up the app with injected stubs via a `serve()` helper; LLM tests point the client at a local stub server.
-- Claude Code tests never call the real CLI: `fakeClaude()` in `llm.test.js` writes a stand-in executable and points `CLAUDE_CODE_PATH` at it, then asserts on the args, stdin, cwd, and env it received.
-- Tests that touch provider config must clear and restore every LLM env var, including `CLAUDE_CODE_*` (see `KEYS` / `LLM_KEYS`).
+- CLI provider tests never call the real CLIs: `fakeClaude()` / `fakeCopilot()` in `llm.test.js` write stand-in executables and points `CLAUDE_CODE_PATH` at it, then asserts on the args, stdin, cwd, and env it received.
+- Tests that touch provider config must clear and restore every LLM env var, including `CLAUDE_CODE_*` and `COPILOT_*` (see `KEYS` / `LLM_KEYS`).
 - Add a test when changing validation, routing, or provider behavior. Run `pnpm test` and `pnpm lint` before you finish.

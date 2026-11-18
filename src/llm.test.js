@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,6 +15,7 @@ const KEYS = [
   'LLM_PROVIDER', 'LLM_MODEL', 'LLM_BASE_URL', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
   'GOOGLE_API_KEY', 'OPEN_ROUTER_API_KEY', 'OPENROUTER_SITE_URL', 'OPENROUTER_APP_NAME',
   'CLAUDE_CODE_ENABLED', 'CLAUDE_CODE_PATH', 'CLAUDE_CODE_MODEL',
+  'COPILOT_ENABLED', 'COPILOT_PATH', 'COPILOT_MODEL', 'COPILOT_ALLOW_ALL',
 ];
 
 function captureEnv() {
@@ -415,4 +416,76 @@ test('marks a deliberate empty answer as declined and keeps the explanation', as
   assert.deepEqual(await suggestQuery({ question: 'Accounts with no contacts' }), {
     query: '', explanation: 'Contact fields are not in the schema.', declined: true,
   });
+});
+
+/** A stand-in `copilot` CLI: echoes its args, cwd and env back as a JSONL event stream. */
+async function fakeCopilot(t, behavior = 'echo') {
+  const dir = await mkdtemp(join(tmpdir(), 'fake-copilot-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const script = join(dir, 'copilot');
+  await writeFile(script, `#!${process.execPath}
+const args = process.argv.slice(2);
+const behavior = ${JSON.stringify(behavior)};
+if (args[0] === 'help' && args[1] === 'config') {
+  console.log('Settings:\\n  \\x60model\\x60: AI model to use.\\n    - "claude-sonnet-5.5"\\n    - "gpt-6.1-sol"\\n    - "--bad"\\n  \\x60modelProviderId\\x60: Provider.\\n    - "not-a-model"');
+  process.exit(0);
+}
+if (behavior === 'unavailable') { process.stderr.write('Error: Model "x" from --model flag is not available.'); process.exit(1); }
+const event = (type, data) => console.log(JSON.stringify({ type, data }));
+event('session.info', {});
+event('assistant.message', { content: 'thinking out loud', toolRequests: [] });
+const payload = { args, cwd: process.cwd(), env: { allowAll: process.env.COPILOT_ALLOW_ALL ?? null, anthropic: process.env.ANTHROPIC_API_KEY ?? null } };
+event('assistant.message', { content: JSON.stringify(payload), toolRequests: [] });
+console.log(JSON.stringify({ type: 'result', exitCode: 0 }));
+`);
+  await chmod(script, 0o755);
+  return script;
+}
+
+test('runs GitHub Copilot headlessly with every tool excluded, in a throwaway directory', async (t) => {
+  withEnv(t, {
+    COPILOT_ENABLED: 'true',
+    COPILOT_PATH: await fakeCopilot(t),
+    COPILOT_ALLOW_ALL: 'true',
+    ANTHROPIC_API_KEY: 'must-not-leak',
+  });
+
+  const output = JSON.parse(await completeText(
+    { system: 'sys prompt', user: 'user prompt' },
+    { provider: 'copilot', model: 'claude-sonnet-5.5' },
+  ));
+  const flag = (name) => output.args[output.args.indexOf(name) + 1];
+  assert.equal(flag('--model'), 'claude-sonnet-5.5');
+  assert.equal(flag('--output-format'), 'json');
+  assert.match(flag('-p'), /^sys prompt\n\n---\n\nuser prompt$/);
+  const excluded = output.args.find((arg) => arg.startsWith('--excluded-tools=')).split('=')[1].split(',');
+  for (const tool of ['bash', 'view', 'edit', 'create', 'web_fetch', 'task']) assert.ok(excluded.includes(tool), tool);
+  for (const option of ['--disable-builtin-mcps', '--no-custom-instructions', '--no-ask-user', '--disallow-temp-dir']) {
+    assert.ok(output.args.includes(option), option);
+  }
+  assert.equal(output.args.some((arg) => /allow-all|yolo|autopilot/.test(arg)), false);
+  assert.equal(flag('-C'), output.cwd.replace(/^\/private/, ''));
+  assert.match(output.cwd, /soql-copilot-/);
+  await assert.rejects(access(output.cwd), 'the working directory is removed afterwards');
+  assert.deepEqual(output.env, { allowAll: null, anthropic: null });
+});
+
+test('reports GitHub Copilot failures and validates model IDs', async (t) => {
+  withEnv(t, { COPILOT_ENABLED: 'true', COPILOT_PATH: await fakeCopilot(t, 'unavailable') });
+  await assert.rejects(
+    completeText({ system: 's', user: 'u' }, { model: 'gpt-6.1-sol' }),
+    /GitHub Copilot failed: Error: Model "x" from --model flag is not available/,
+  );
+  const config = getLlmConfig('copilot');
+  assert.equal(config.model, 'auto');
+  assert.equal(isAllowedModel(config, 'claude-haiku-4.5'), true);
+  assert.equal(isAllowedModel(config, '--allow-all'), false);
+  assert.equal(isAllowedModel(config, 'Bad Model'), false);
+});
+
+test('reads the Copilot model catalog from the CLI help', async (t) => {
+  withEnv(t, { COPILOT_ENABLED: 'true', COPILOT_PATH: await fakeCopilot(t) });
+  const catalog = await listLlmModels('copilot');
+  assert.equal(catalog.defaultModel, 'auto');
+  assert.deepEqual(catalog.models.map((model) => model.id), ['auto', 'claude-sonnet-5.5', 'gpt-6.1-sol']);
 });
