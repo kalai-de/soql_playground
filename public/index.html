@@ -63,8 +63,11 @@
           <form id="ai-form" class="ai-bar" aria-label="Ask AI to write a query">
             <span class="ai-mark" aria-hidden="true">✦</span>
             <label class="sr-only" for="ai-question">Describe the records you want</label>
-            <input id="ai-question" placeholder="Describe the records you want, e.g. accounts created this year with no contacts" maxlength="500" autocomplete="off">
-            <button id="ai-submit" class="ai-button" type="submit">Write SOQL</button>
+            <textarea id="ai-question" rows="2" placeholder="Describe the records you want, e.g. assets with their physical inventory name, created this year" maxlength="500" autocomplete="off" spellcheck="true"></textarea>
+            <div class="ai-actions">
+              <button id="ai-submit" class="ai-button" type="submit">Write SOQL</button>
+              <span class="ai-hint">Shift + Enter for a new line</span>
+            </div>
           </form>
           <div class="ai-settings" id="ai-panel">
             <label for="ai-provider-select">Model</label>

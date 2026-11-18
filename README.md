@@ -53,7 +53,7 @@ Credentials and access tokens stay on the server. Queries run with the integrati
 
 ## AI query assistant
 
-Type a request in the amber prompt above the editor and choose **Write SOQL**. The server sends the model:
+Type a request in the amber prompt above the editor (two lines, growing to three; **Shift + Enter** adds a line) and press **Enter** or choose **Write SOQL**. The server sends the model:
 
 - your request and the current editor contents,
 - the org's queryable object names (up to 500), and

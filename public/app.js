@@ -800,6 +800,21 @@ $('use-object').addEventListener('click', () => {
 $('run').addEventListener('click', () => runQuery());
 $('ai-model').addEventListener('change', updateAiModelMeta);
 $('ai-provider-select').addEventListener('change', changeAiProvider);
+/** Grow the AI request box from two lines up to its CSS max-height (three lines). */
+function sizeAiQuestion() {
+  const box = $('ai-question');
+  box.style.height = '';
+  if (box.scrollHeight > box.clientHeight) box.style.height = `${box.scrollHeight}px`;
+}
+
+$('ai-question').addEventListener('input', sizeAiQuestion);
+$('ai-question').addEventListener('keydown', (event) => {
+  // Enter (or Cmd/Ctrl + Enter) sends; Shift + Enter adds a line. Skip while composing IME text.
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  event.stopPropagation();
+  $('ai-form').requestSubmit();
+});
 $('ai-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const question = $('ai-question').value.trim();

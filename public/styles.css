@@ -315,10 +315,27 @@ aside {
 
 /* ---------- Composer: AI prompt + editor ---------- */
 .composer { border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); overflow: hidden; }
-.ai-bar { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 14px; background: var(--ai-soft); border-bottom: 1px solid var(--ai-rule); }
+.ai-bar { display: flex; align-items: flex-start; gap: 10px; padding: 8px 8px 8px 14px; background: var(--ai-soft); border-bottom: 1px solid var(--ai-rule); }
+.ai-mark { margin-top: 9px; }
 .ai-mark { color: var(--ai); font-size: 15px; line-height: 1; }
-.ai-bar input { flex: 1; min-width: 0; border: 0; background: transparent; padding: 6px 0; font-size: 14px; min-height: 32px; }
-.ai-bar input:focus-visible { outline: 0; }
+/* Two lines tall, grows to three as you type (see sizeAiQuestion()), then scrolls. */
+#ai-question {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 6px 0;
+  font-size: 14px;
+  line-height: 21px;
+  height: calc(2 * 21px + 12px);
+  max-height: calc(3 * 21px + 12px);
+  resize: none;
+  overflow-y: auto;
+}
+#ai-question::placeholder { color: var(--text-faint); }
+#ai-question:focus-visible { outline: 0; }
+.ai-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.ai-hint { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
 .ai-bar:focus-within { box-shadow: inset 0 0 0 2px var(--ai); }
 .ai-button { background: var(--surface); border-color: var(--ai-rule); color: var(--ai); white-space: nowrap; }
 .ai-button:hover:not(:disabled) { border-color: var(--ai); color: var(--ai); }
@@ -331,7 +348,7 @@ aside {
 .ai-answer.is-error { color: var(--danger); border-left-color: var(--danger); background: var(--danger-bg); }
 
 .code-editor { display: flex; align-items: stretch; background: var(--code-bg); }
-#line-numbers, #highlight, textarea {
+#line-numbers, #highlight, #query {
   font-family: var(--font-mono);
   font-size: 13.5px;
   line-height: 24px;
@@ -350,7 +367,7 @@ aside {
   border-right: 1px solid var(--rule);
 }
 .code-area { position: relative; flex: 1; min-width: 0; }
-#highlight, textarea {
+#highlight, #query {
   margin: 0;
   padding: 14px 18px;
   border: 0;
@@ -364,7 +381,7 @@ aside {
   color: var(--code-text);
   pointer-events: none;
 }
-textarea {
+#query {
   position: relative;
   display: block;
   width: 100%;
@@ -375,8 +392,8 @@ textarea {
   resize: none;
   overflow: auto;
 }
-textarea::selection { background: var(--selection); color: transparent; }
-textarea:focus-visible { outline: 0; }
+#query::selection { background: var(--selection); color: transparent; }
+#query:focus-visible { outline: 0; }
 .code-editor:focus-within { box-shadow: inset 0 0 0 2px var(--accent); }
 .tok-keyword { color: var(--tok-keyword); font-weight: 600; }
 .tok-string { color: var(--tok-string); }
@@ -514,8 +531,11 @@ td.copied { background: var(--success-bg) !important; color: var(--success); }
 }
 @media (max-width: 420px) {
   .ai-bar { flex-wrap: wrap; padding: 8px 10px; }
-  .ai-bar input { flex-basis: calc(100% - 30px); }
+  #ai-question { flex-basis: calc(100% - 30px); }
+  .ai-actions { width: 100%; }
+  .ai-hint { display: none; }
   .ai-button { width: 100%; }
+  .ai-mark { margin-top: 7px; }
   #editor-meta { display: none; }
   .run-group .primary { flex: 1; }
 }
