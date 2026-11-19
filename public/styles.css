@@ -190,7 +190,8 @@ header {
 :root[data-theme="dark"] .icon-moon { display: none; }
 
 /* ---------- Layout ---------- */
-main { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: calc(100vh - var(--header-height)); }
+/* The sidebar grows a little on wide monitors; the workspace takes the rest of the screen. */
+main { display: grid; grid-template-columns: clamp(280px, 17vw, 400px) minmax(0, 1fr); min-height: calc(100vh - var(--header-height)); }
 aside {
   position: sticky;
   top: var(--header-height);
@@ -200,7 +201,7 @@ aside {
   display: flex;
   flex-direction: column;
 }
-.workspace { min-width: 0; max-width: 1480px; width: 100%; padding: 20px 24px 28px; }
+.workspace { min-width: 0; width: 100%; padding: 20px 24px 28px; }
 
 /* ---------- Schema sidebar ---------- */
 .pane { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: 16px 12px 0; gap: 10px; }
