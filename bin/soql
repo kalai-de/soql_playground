@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# soql: start, stop, and open the Salesforce SOQL Playground from any directory.
+#
+#   soql              start in the background (if needed) and open the browser
+#   soql start        start in the background
+#   soql stop         stop the background server
+#   soql restart      stop, then start
+#   soql status       show whether it is running, its URL, and its PID
+#   soql logs [-f]    print (or follow) the server log
+#   soql open         open the app in the browser
+#   soql run          run in the foreground (Ctrl+C to stop)
+#   soql dev          run in the foreground with file watching
+#   soql install      link this script into ~/.local/bin (or $SOQL_BIN_DIR)
+#   soql uninstall    remove that link
+#
+# Options (before or after the command):
+#   -p, --port <n>    use this port instead of PORT from .env (default 3000)
+#   --no-open         do not open the browser
+#
+# Environment: SOQL_PORT (same as --port), SOQL_STATE_DIR (pid and log files,
+# default ~/.local/state/soql-playground), SOQL_BIN_DIR (install target).
+
+set -euo pipefail
+
+# ---------- locate the repository, following symlinks ----------
+resolve_path() {
+  local target="$1" dir
+  while [ -L "$target" ]; do
+    dir="$(cd -P "$(dirname "$target")" && pwd)"
+    target="$(readlink "$target")"
+    case "$target" in /*) ;; *) target="$dir/$target" ;; esac
+  done
+  cd -P "$(dirname "$target")" && pwd
+}
+
+SCRIPT_DIR="$(resolve_path "${BASH_SOURCE[0]}")"
+APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+STATE_DIR="${SOQL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/soql-playground}"
+PID_FILE="$STATE_DIR/server.pid"
+LOG_FILE="$STATE_DIR/server.log"
+BIN_DIR="${SOQL_BIN_DIR:-$HOME/.local/bin}"
+
+# ---------- output helpers ----------
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; RESET=$'\033[0m'
+else
+  BOLD=''; DIM=''; GREEN=''; RED=''; YELLOW=''; RESET=''
+fi
+info() { printf '%s\n' "$*"; }
+ok() { printf '%s✓%s %s\n' "$GREEN" "$RESET" "$*"; }
+warn() { printf '%s!%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+die() { printf '%s✗%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
+
+# ---------- configuration ----------
+env_port() {
+  [ -f "$APP_DIR/.env" ] || return 0
+  # Last PORT= line wins, like node --env-file. Strips quotes and comments.
+  sed -n 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*["'\'']\{0,1\}\([0-9]\{1,5\}\).*$/\1/p' "$APP_DIR/.env" | tail -n 1
+}
+
+PORT_OVERRIDE="${SOQL_PORT:-}"
+OPEN_BROWSER=1
+COMMAND=''
+FOLLOW=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--port) [ $# -ge 2 ] || die "$1 needs a port number"; PORT_OVERRIDE="$2"; shift 2 ;;
+    --port=*) PORT_OVERRIDE="${1#*=}"; shift ;;
+    --no-open) OPEN_BROWSER=0; shift ;;
+    -f|--follow) FOLLOW=1; shift ;;
+    -h|--help|help) COMMAND=help; shift ;;
+    -*) die "Unknown option: $1 (see soql help)" ;;
+    *) [ -z "$COMMAND" ] || die "Only one command at a time (got $COMMAND and $1)"; COMMAND="$1"; shift ;;
+  esac
+done
+COMMAND="${COMMAND:-up}"
+
+PORT="${PORT_OVERRIDE:-$(env_port)}"
+PORT="${PORT:-3000}"
+case "$PORT" in ''|*[!0-9]*) die "Port must be a number, got: $PORT" ;; esac
+URL="http://localhost:$PORT"
+HEALTH_URL="http://127.0.0.1:$PORT/api/ai/status"
+
+# ---------- process helpers ----------
+saved_pid() {
+  [ -f "$PID_FILE" ] || return 1
+  local pid
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  # Make sure the PID still belongs to this app, not a reused PID.
+  ps -p "$pid" -o command= 2>/dev/null | grep -q "src/index.js" || return 1
+  printf '%s' "$pid"
+}
+
+responds() { curl -fsS -o /dev/null --max-time 2 "$HEALTH_URL" 2>/dev/null; }
+
+port_owner() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  # lsof exits 1 when nothing listens; that is the normal case, not an error.
+  { lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true; } | awk 'NR == 2 { print $1 " (PID " $2 ")" }'
+}
+
+open_browser() {
+  [ "$OPEN_BROWSER" = 1 ] || return 0
+  if command -v open >/dev/null 2>&1; then open "$URL"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL" >/dev/null 2>&1 &
+  else info "Open $URL in your browser."
+  fi
+}
+
+# ---------- preflight ----------
+preflight() {
+  command -v node >/dev/null 2>&1 || die "Node.js is not installed. Install Node.js 22 or newer."
+  local major
+  major="$(node -p 'process.versions.node.split(".")[0]')"
+  [ "$major" -ge 22 ] || die "Node.js 22+ is required (found $(node -v))."
+  [ -f "$APP_DIR/.env" ] || die "Missing $APP_DIR/.env. Copy .env.example to .env and fill in your Salesforce settings."
+  if [ ! -d "$APP_DIR/node_modules" ]; then
+    command -v pnpm >/dev/null 2>&1 || die "Dependencies are not installed and pnpm was not found. Install pnpm, then run: cd $APP_DIR && pnpm install"
+    info "Installing dependencies…"
+    (cd "$APP_DIR" && pnpm install --frozen-lockfile) || die "pnpm install failed."
+  fi
+}
+
+# ---------- commands ----------
+cmd_start() {
+  local pid
+  if pid="$(saved_pid)"; then
+    ok "Already running at $URL (PID $pid)"
+    return 0
+  fi
+  if responds; then
+    ok "Already running at $URL (started outside this script)"
+    return 0
+  fi
+  local owner
+  owner="$(port_owner)"
+  [ -z "$owner" ] || die "Port $PORT is in use by $owner. Stop it, or pick another port: soql --port 3001"
+
+  preflight
+  mkdir -p "$STATE_DIR"
+  {
+    printf '\n=== %s  starting on port %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$PORT"
+  } >> "$LOG_FILE"
+  (
+    cd "$APP_DIR"
+    # An exported PORT wins over .env: node --env-file never overrides variables that are already set.
+    PORT="$PORT" nohup node --env-file=.env src/index.js >> "$LOG_FILE" 2>&1 &
+    printf '%s' "$!" > "$PID_FILE"
+  )
+  pid="$(cat "$PID_FILE")"
+
+  printf 'Starting SOQL Playground on port %s' "$PORT"
+  local tries=0
+  until responds; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      printf '\n'
+      rm -f "$PID_FILE"
+      warn "The server exited during startup. Last log lines:"
+      tail -n 15 "$LOG_FILE" >&2
+      exit 1
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -lt 60 ] || { printf '\n'; die "No response after 15 seconds. See: soql logs"; }
+    printf '.'
+    sleep 0.25
+  done
+  printf '\n'
+  ok "Running at ${BOLD}$URL${RESET} ${DIM}(PID $pid, log: $LOG_FILE)${RESET}"
+}
+
+cmd_stop() {
+  local pid
+  if ! pid="$(saved_pid)"; then
+    rm -f "$PID_FILE"
+    if responds; then
+      warn "A server is answering on port $PORT but was not started by soql$( [ -n "$(port_owner)" ] && printf ': %s' "$(port_owner)" ). Leaving it alone."
+    else
+      info "Not running."
+    fi
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  local tries=0
+  while kill -0 "$pid" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 20 ]; then
+      warn "Still running after 5 seconds; forcing it to stop."
+      kill -9 "$pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.25
+  done
+  rm -f "$PID_FILE"
+  ok "Stopped (PID $pid)"
+}
+
+cmd_status() {
+  local pid
+  if pid="$(saved_pid)"; then
+    if responds; then ok "Running at $URL (PID $pid)"
+    else warn "Process $pid is alive but not answering on port $PORT yet. See: soql logs"
+    fi
+  elif responds; then
+    ok "Running at $URL (started outside this script)"
+  else
+    info "Not running. Start it with: soql"
+    return 3
+  fi
+}
+
+cmd_logs() {
+  [ -f "$LOG_FILE" ] || die "No log yet ($LOG_FILE). Start the server first."
+  if [ "$FOLLOW" = 1 ]; then tail -n 50 -f "$LOG_FILE"; else tail -n 100 "$LOG_FILE"; fi
+}
+
+cmd_foreground() {
+  local watch="$1"
+  preflight
+  local owner
+  owner="$(port_owner)"
+  [ -z "$owner" ] || die "Port $PORT is in use by $owner. Stop it (soql stop) or pick another port: soql run --port 3001"
+  cd "$APP_DIR"
+  info "Running in the foreground at $URL. Press Ctrl+C to stop."
+  if [ "$watch" = 1 ]; then
+    PORT="$PORT" exec node --watch --env-file=.env src/index.js
+  else
+    PORT="$PORT" exec node --env-file=.env src/index.js
+  fi
+}
+
+cmd_install() {
+  mkdir -p "$BIN_DIR"
+  local link="$BIN_DIR/soql"
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    die "$link already exists and is not a symlink. Remove it first or set SOQL_BIN_DIR."
+  fi
+  ln -sfn "$SCRIPT_PATH" "$link"
+  ok "Linked $link → $SCRIPT_PATH"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) info "Run ${BOLD}soql${RESET} from any directory." ;;
+    *) warn "$BIN_DIR is not on your PATH. Add this to ~/.zshrc (or ~/.bashrc):"
+       info "  export PATH=\"$BIN_DIR:\$PATH\"" ;;
+  esac
+}
+
+cmd_uninstall() {
+  local link="$BIN_DIR/soql"
+  if [ -L "$link" ]; then rm -f "$link"; ok "Removed $link"
+  else info "No soql link in $BIN_DIR."
+  fi
+}
+
+cmd_help() {
+  sed -n '2,/^$/{s/^# \{0,1\}//;p;}' "$SCRIPT_PATH"
+  info "App directory: $APP_DIR"
+}
+
+case "$COMMAND" in
+  up) cmd_start; open_browser ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_stop; cmd_start ;;
+  status) cmd_status ;;
+  logs) cmd_logs ;;
+  open) responds || warn "Nothing is answering at $URL yet. Start it with: soql start"; OPEN_BROWSER=1; open_browser ;;
+  run) cmd_foreground 0 ;;
+  dev) cmd_foreground 1 ;;
+  install) cmd_install ;;
+  uninstall) cmd_uninstall ;;
+  help) cmd_help ;;
+  *) die "Unknown command: $COMMAND (see soql help)" ;;
+esac

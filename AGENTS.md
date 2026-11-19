@@ -20,6 +20,7 @@ pnpm dev          # run with --watch and .env
 pnpm start        # run once
 pnpm lint         # eslint .
 pnpm test         # node --test
+bin/soql help     # background start/stop/status/logs from any directory
 ```
 
 Before finishing any change, run both `pnpm lint` and `pnpm test` and fix any failures or lint errors.
@@ -27,6 +28,8 @@ Before finishing any change, run both `pnpm lint` and `pnpm test` and fix any fa
 ## Architecture
 
 ```
+bin/
+  soql              # Bash launcher: resolves the repo through symlinks, manages a background server (PID + log in ~/.local/state/soql-playground).
 src/
   index.js          # Entry point. Reads PORT, listens on 127.0.0.1.
   app.js            # createApp(): routes, input validation, schema shaping, static serving, error handler.
@@ -101,6 +104,8 @@ Providers live in the `PROVIDERS` map in `llm.js`, with display names in `PROVID
 - **Results:** `runQuery()`, `renderResult()`, `flatten()` for nested relationship fields, and `toCsv()` / `saveFile()` for export.
 
 ## Conventions
+
+- `bin/soql` must keep working when symlinked from another directory (`resolve_path()`), only stop processes whose command line contains `src/index.js`, and never kill a server it did not start. Health checks use `GET /api/ai/status` because it does not call Salesforce. Keep it compatible with macOS and Linux bash.
 
 - ES modules only: `import`/`export`, no `require`.
 - Keep the codebase dependency-light. Prefer Web/Node built-ins (`fetch`, `node:test`, `node:child_process`) over new packages. The only external resource is the Google Fonts stylesheet; do not add other CDNs.

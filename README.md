@@ -29,6 +29,30 @@ pnpm dev
 
 Open http://localhost:3000. Use `pnpm start` to run without file watching. `PORT` defaults to `3000`, and the server listens on `127.0.0.1` only.
 
+### Start it from anywhere with `soql`
+
+`bin/soql` runs the app in the background from any directory. Link it onto your `PATH` once:
+
+```sh
+bin/soql install        # links ~/.local/bin/soql to this repo (set SOQL_BIN_DIR to change)
+```
+
+Then, from any terminal:
+
+| Command | What it does |
+| --- | --- |
+| `soql` | Start in the background if needed, then open the browser |
+| `soql start` / `stop` / `restart` | Manage the background server |
+| `soql status` | Show the URL and PID (exit code 3 when stopped) |
+| `soql logs [-f]` | Print or follow the server log |
+| `soql open` | Open the app in the browser |
+| `soql run` / `soql dev` | Run in the foreground (`dev` adds file watching) |
+| `soql uninstall` | Remove the link |
+
+Options: `--port <n>` (or `SOQL_PORT`) overrides `PORT` from `.env`; `--no-open` skips the browser. The PID and log live in `~/.local/state/soql-playground/` (set `SOQL_STATE_DIR` to change). On first run it installs dependencies if `node_modules` is missing, and it refuses to start if `.env` is missing or the port is taken by another program.
+
+The background server inherits the `PATH` of the terminal you start it from, which matters for the local `claude` and `copilot` CLIs.
+
 ## Scripts
 
 | Script | Command | Purpose |
@@ -170,6 +194,8 @@ All endpoints are prefixed with `/api` and return JSON. Errors are `{ error, cod
 ## Project structure
 
 ```
+bin/
+  soql              # Start/stop/status/logs helper; run from anywhere after `bin/soql install`
 src/
   index.js          # HTTP entry point; starts Express on 127.0.0.1
   app.js            # Express app: routes, validation, schema shaping, static files
